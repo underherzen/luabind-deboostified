@@ -28,7 +28,9 @@
 #include <luabind/detail/class_rep.hpp>
 #include <luabind/detail/instance_holder.hpp>
 #include <luabind/detail/ref.hpp>
-#include <type_traits>	// std::aligned_storage
+#include <cstddef>
+#include <cstdint>
+#include <type_traits>
 #include <cstdlib>
 
 namespace luabind {
@@ -73,7 +75,14 @@ namespace luabind {
 			void* allocate(std::size_t size)
 			{
 				if(size <= 32) {
-					return &m_instance_buffer;
+					// PUC Lua 5.1 userdata payload is only 8-byte aligned
+					// (the Udata header is 40 bytes on x86-64, LuaJIT's is 16),
+					// so this object may itself sit at an 8-mod-16 address.
+					// Manually align the embedded holder storage, holders may
+					// contain over-aligned types accessed with SSE.
+					std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(m_instance_buffer);
+					addr = (addr + 15) & ~static_cast<std::uintptr_t>(15);
+					return reinterpret_cast<void*>(addr);
 				}
 				else {
 					return std::malloc(size);
@@ -83,7 +92,8 @@ namespace luabind {
 
 			void deallocate(void* storage)
 			{
-				if(storage == &m_instance_buffer) {
+				if(storage >= m_instance_buffer
+					&& storage < m_instance_buffer + sizeof(m_instance_buffer)) {
 					return;
 				}
 				else {
@@ -96,7 +106,9 @@ namespace luabind {
 			void operator=(object_rep const&) = delete;
 
 			instance_holder* m_instance;
-			std::aligned_storage<32>::type m_instance_buffer;
+			// not std::aligned_storage: the owning userdata may be 8-byte aligned only
+				// (see allocate); alignment is applied where the holder is placed
+				unsigned char m_instance_buffer[32 + 16];
 			class_rep* m_classrep; // the class information about this object's type
 			detail::lua_reference m_dependency_ref; // reference to lua table holding dependency references
 		};
